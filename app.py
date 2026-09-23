@@ -28,6 +28,13 @@ app.secret_key = os.environ.get(
     "lab1-development-secret-change-me"
 )
 
+# Tiyaking ma-initialize ang database tables sa startup ng Gunicorn o Flask
+with app.app_context():
+    try:
+        init_db()
+    except Exception as e:
+        print(f"Startup DB init error: {e}")
+
 
 def login_required(view):
     @wraps(view)
@@ -370,7 +377,6 @@ def logout():
 
 
 if __name__ == "__main__":
-    init_db()
     print()
     print("=" * 58)
     print(" CAMPUS HARDWARE INVENTORY - WEB PORTAL")
