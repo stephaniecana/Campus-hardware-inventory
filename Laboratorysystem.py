@@ -58,33 +58,41 @@ class DBWrapper:
 
     def _convert_sql(self, sql):
         if self.is_pg:
-            # Replace SQLite ? with PostgreSQL %s
             return sql.replace("?", "%s")
         return sql
 
     def execute(self, sql, params=()):
         sql = self._convert_sql(sql)
-        cursor = self.conn.cursor()
-        cursor.execute(sql, params)
-        return cursor
+        cur = self.conn.cursor()
+        cur.execute(sql, tuple(params))
+        return cur
 
     def executemany(self, sql, param_seq):
         sql = self._convert_sql(sql)
-        cursor = self.conn.cursor()
-        cursor.executemany(sql, param_seq)
-        return cursor
+        cur = self.conn.cursor()
+        cur.executemany(sql, [tuple(p) for p in param_seq])
+        return cur
 
     def commit(self):
         self.conn.commit()
 
+    def rollback(self):
+        try:
+            self.conn.rollback()
+        except Exception:
+            pass
+
     def close(self):
-        self.conn.close()
+        try:
+            self.conn.close()
+        except Exception:
+            pass
 
 
 def get_connection():
     db_url = os.getenv("DATABASE_URL")
     if db_url and PSYCOPG_AVAILABLE:
-        conn = psycopg.connect(db_url, row_factory=dict_row)
+        conn = psycopg.connect(db_url, autocommit=True, row_factory=dict_row)
         return DBWrapper(conn, is_pg=True)
     else:
         conn = sqlite3.connect(DB_NAME)
@@ -142,7 +150,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS loans (
             loan_id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL,
-            item_id INTEGER NOT NULL,
+            item_id INTEGER,
+            item_name TEXT,
             quantity INTEGER NOT NULL DEFAULT 1,
             status TEXT NOT NULL DEFAULT 'PENDING_BORROW',
             borrowed_at TIMESTAMP,
@@ -152,7 +161,6 @@ def init_db():
         )
     """)
 
-    # Create default Admin if not exists
     admin = conn.execute("SELECT id FROM users WHERE UPPER(role) = 'ADMIN' LIMIT 1").fetchone()
     if not admin:
         password_hash = bcrypt.hashpw(b"Admin@123", bcrypt.gensalt()).decode("utf-8")
@@ -174,7 +182,7 @@ def init_db():
 # ==========================================================
 
 def validate_username(username):
-    if len(username) < 3:
+    if not username or len(username) < 3:
         return False, "Username must be at least 3 characters long."
     if not re.match(r"^[a-zA-Z0-9_]+$", username):
         return False, "Username must contain only letters, numbers, and underscores."
@@ -182,13 +190,13 @@ def validate_username(username):
 
 
 def validate_email(email):
-    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+    if not email or not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
         return False, "Please enter a valid email address."
     return True, ""
 
 
 def validate_password(password):
-    if len(password) < 8:
+    if not password or len(password) < 8:
         return False, "Password must be at least 8 characters long."
     if not re.search(r"[A-Z]", password):
         return False, "Password must contain at least one uppercase letter."
@@ -216,47 +224,57 @@ class AuthController:
     @staticmethod
     def login_user(username, password):
         conn = get_connection()
-        user = conn.execute(
-            "SELECT * FROM users WHERE username = ?", (username,)
-        ).fetchone()
-
-        if not user:
-            conn.close()
-            logging.warning("Failed login attempt: unknown username - %s", username)
-            return False, "Invalid username or password.", None, False, None
-
-        if user["is_locked"] == 1:
-            conn.close()
-            return False, "This account is locked. Please request a password reset.", user["role"], True, user["email"]
-
         try:
-            password_matches = bcrypt.checkpw(
-                password.encode("utf-8"),
-                user["password_hash"].encode("utf-8")
-            )
-        except Exception:
-            password_matches = False
+            user = conn.execute(
+                "SELECT * FROM users WHERE username = ?", (username,)
+            ).fetchone()
 
-        if password_matches:
-            conn.execute("UPDATE users SET login_attempts = 0 WHERE id = ?", (user["id"],))
+            if not user:
+                logging.warning("Failed login attempt: unknown username - %s", username)
+                return False, "Invalid username or password.", None, False, None
+
+            if user["is_locked"] == 1:
+                return False, "This account is locked. Please request a password reset.", user["role"], True, user.get("email", "")
+
+            try:
+                stored_hash = user["password_hash"]
+                if isinstance(stored_hash, str):
+                    stored_hash_bytes = stored_hash.encode("utf-8")
+                else:
+                    stored_hash_bytes = bytes(stored_hash)
+
+                password_matches = bcrypt.checkpw(
+                    password.encode("utf-8"),
+                    stored_hash_bytes
+                )
+            except Exception as e:
+                logging.error("Password check exception: %s", e)
+                password_matches = False
+
+            if password_matches:
+                conn.execute("UPDATE users SET login_attempts = 0 WHERE id = ?", (user["id"],))
+                conn.commit()
+                logging.info("Successful login: %s | Role: %s", username, user["role"])
+                return True, "Login successful.", user["role"], False, user.get("email", "")
+
+            attempts = (user["login_attempts"] or 0) + 1
+            if attempts >= 3:
+                conn.execute("UPDATE users SET login_attempts = ?, is_locked = 1 WHERE id = ?", (attempts, user["id"]))
+                conn.commit()
+                logging.warning("Account locked after 3 failed attempts: %s", username)
+                return False, "Account locked after 3 failed attempts.", user["role"], True, user.get("email", "")
+
+            conn.execute("UPDATE users SET login_attempts = ? WHERE id = ?", (attempts, user["id"]))
             conn.commit()
-            conn.close()
-            logging.info("Successful login: %s | Role: %s", username, user["role"])
-            return True, "Login successful.", user["role"], False, user["email"]
+            remaining = 3 - attempts
+            return False, f"Invalid username or password. Remaining attempts: {remaining}", user["role"], False, user.get("email", "")
 
-        attempts = user["login_attempts"] + 1
-        if attempts >= 3:
-            conn.execute("UPDATE users SET login_attempts = ?, is_locked = 1 WHERE id = ?", (attempts, user["id"]))
-            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            logging.error("Database error during login: %s", e)
+            return False, f"Database error: {e}", None, False, None
+        finally:
             conn.close()
-            logging.warning("Account locked after 3 failed attempts: %s", username)
-            return False, "Account locked after 3 failed attempts.", user["role"], True, user["email"]
-
-        conn.execute("UPDATE users SET login_attempts = ? WHERE id = ?", (attempts, user["id"]))
-        conn.commit()
-        conn.close()
-        remaining = 3 - attempts
-        return False, f"Invalid username or password. Remaining attempts: {remaining}", user["role"], False, user["email"]
 
     @staticmethod
     def register_user(username, email, password, role="USER"):
@@ -280,7 +298,8 @@ class AuthController:
             conn.commit()
             logging.info("New account registered: %s | Role: %s", username, role)
             return True, "Registration successful! You may now log in."
-        except Exception:
+        except Exception as e:
+            conn.rollback()
             return False, "Username or email is already registered."
         finally:
             conn.close()
@@ -292,45 +311,50 @@ class AuthController:
             return False, msg
 
         conn = get_connection()
-        user = conn.execute(
-            "SELECT id FROM users WHERE username = ? AND email = ?",
-            (username, email)
-        ).fetchone()
+        try:
+            user = conn.execute(
+                "SELECT id FROM users WHERE username = ? AND email = ?",
+                (username, email)
+            ).fetchone()
 
-        if not user:
+            if not user:
+                return False, "Username and registered email do not match."
+
+            pending = conn.execute(
+                "SELECT request_id FROM password_resets WHERE username = ? AND status = 'PENDING'",
+                (username,)
+            ).fetchone()
+
+            if pending:
+                return False, "A reset request is already pending for this account."
+
+            pw_hash = bcrypt.hashpw(new_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+            conn.execute("""
+                INSERT INTO password_resets (username, email, password_hash, status)
+                VALUES (?, ?, ?, 'PENDING')
+            """, (username, email, pw_hash))
+            conn.commit()
+            logging.info("Password reset request submitted: %s", username)
+            return True, "Reset request submitted. An admin will review it."
+        except Exception as e:
+            conn.rollback()
+            return False, str(e)
+        finally:
             conn.close()
-            return False, "Username and registered email do not match."
-
-        pending = conn.execute(
-            "SELECT request_id FROM password_resets WHERE username = ? AND status = 'PENDING'",
-            (username,)
-        ).fetchone()
-
-        if pending:
-            conn.close()
-            return False, "A reset request is already pending for this account."
-
-        pw_hash = bcrypt.hashpw(new_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-        conn.execute("""
-            INSERT INTO password_resets (username, email, password_hash, status)
-            VALUES (?, ?, ?, 'PENDING')
-        """, (username, email, pw_hash))
-        conn.commit()
-        conn.close()
-        logging.info("Password reset request submitted: %s", username)
-        return True, "Reset request submitted. An admin will review it."
 
     @staticmethod
     def get_pending_resets():
         conn = get_connection()
-        rows = conn.execute("""
-            SELECT request_id, username, email, requested_at
-            FROM password_resets
-            WHERE status = 'PENDING'
-            ORDER BY request_id DESC
-        """).fetchall()
-        conn.close()
-        return rows
+        try:
+            rows = conn.execute("""
+                SELECT request_id, username, email, requested_at
+                FROM password_resets
+                WHERE status = 'PENDING'
+                ORDER BY request_id DESC
+            """).fetchall()
+            return rows
+        finally:
+            conn.close()
 
     @staticmethod
     def process_bulk_resets(request_ids, approve=True):
@@ -339,25 +363,30 @@ class AuthController:
 
         conn = get_connection()
         status = "APPROVED" if approve else "REJECTED"
-        for rid in request_ids:
-            req = conn.execute(
-                "SELECT * FROM password_resets WHERE request_id = ?", (rid,)
-            ).fetchone()
-            if req and req["status"] == "PENDING":
-                if approve:
+        try:
+            for rid in request_ids:
+                req = conn.execute(
+                    "SELECT * FROM password_resets WHERE request_id = ?", (rid,)
+                ).fetchone()
+                if req and req["status"] == "PENDING":
+                    if approve:
+                        conn.execute("""
+                            UPDATE users 
+                            SET password_hash = ?, is_locked = 0, login_attempts = 0
+                            WHERE username = ?
+                        """, (req["password_hash"], req["username"]))
                     conn.execute("""
-                        UPDATE users 
-                        SET password_hash = ?, is_locked = 0, login_attempts = 0
-                        WHERE username = ?
-                    """, (req["password_hash"], req["username"]))
-                conn.execute("""
-                    UPDATE password_resets
-                    SET status = ?, reviewed_at = CURRENT_TIMESTAMP
-                    WHERE request_id = ?
-                """, (status, rid))
-        conn.commit()
-        conn.close()
-        return True, f"Selected reset request(s) {status.lower()}."
+                        UPDATE password_resets
+                        SET status = ?, reviewed_at = CURRENT_TIMESTAMP
+                        WHERE request_id = ?
+                    """, (status, rid))
+            conn.commit()
+            return True, f"Selected reset request(s) {status.lower()}."
+        except Exception as e:
+            conn.rollback()
+            return False, str(e)
+        finally:
+            conn.close()
 
     @staticmethod
     def change_password_direct(username, email, old_password, new_password):
@@ -366,20 +395,24 @@ class AuthController:
             return False, msg
 
         conn = get_connection()
-        user = conn.execute(
-            "SELECT id, password_hash FROM users WHERE username = ?", (username,)
-        ).fetchone()
+        try:
+            user = conn.execute(
+                "SELECT id, password_hash FROM users WHERE username = ?", (username,)
+            ).fetchone()
 
-        if not user or not bcrypt.checkpw(old_password.encode("utf-8"), user["password_hash"].encode("utf-8")):
+            if not user or not bcrypt.checkpw(old_password.encode("utf-8"), user["password_hash"].encode("utf-8")):
+                return False, "Current password is incorrect."
+
+            new_hash = bcrypt.hashpw(new_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+            conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_hash, user["id"]))
+            conn.commit()
+            logging.info("Password changed by %s", username)
+            return True, "Password updated successfully."
+        except Exception as e:
+            conn.rollback()
+            return False, str(e)
+        finally:
             conn.close()
-            return False, "Current password is incorrect."
-
-        new_hash = bcrypt.hashpw(new_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-        conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_hash, user["id"]))
-        conn.commit()
-        conn.close()
-        logging.info("Password changed by %s", username)
-        return True, "Password updated successfully."
 
 
 # ==========================================================
@@ -391,28 +424,32 @@ class InventoryController:
     @staticmethod
     def get_all_items(search_text="", category="ALL"):
         conn = get_connection()
-        query = "SELECT item_id, item_name, category, quantity, unit_price, status FROM hardware WHERE 1=1"
-        params = []
+        try:
+            query = "SELECT item_id, item_name, category, quantity, unit_price, status FROM hardware WHERE 1=1"
+            params = []
 
-        if category and category != "ALL":
-            query += " AND category = ?"
-            params.append(category)
+            if category and category != "ALL":
+                query += " AND category = ?"
+                params.append(category)
 
-        if search_text:
-            query += " AND (LOWER(item_name) LIKE ? OR LOWER(category) LIKE ?)"
-            params.extend([f"%{search_text.lower()}%", f"%{search_text.lower()}%"])
+            if search_text:
+                query += " AND (LOWER(item_name) LIKE ? OR LOWER(category) LIKE ?)"
+                params.extend([f"%{search_text.lower()}%", f"%{search_text.lower()}%"])
 
-        query += " ORDER BY item_id DESC"
-        rows = conn.execute(query, params).fetchall()
-        conn.close()
-        return [list(r.values()) if hasattr(r, 'values') else list(r) for r in rows]
+            query += " ORDER BY item_id DESC"
+            rows = conn.execute(query, params).fetchall()
+            return [list(r.values()) if hasattr(r, 'values') else list(r) for r in rows]
+        finally:
+            conn.close()
 
     @staticmethod
     def get_categories():
         conn = get_connection()
-        rows = conn.execute("SELECT DISTINCT category FROM hardware ORDER BY category").fetchall()
-        conn.close()
-        return [r["category"] for r in rows if r["category"]]
+        try:
+            rows = conn.execute("SELECT DISTINCT category FROM hardware ORDER BY category").fetchall()
+            return [r["category"] for r in rows if r["category"]]
+        finally:
+            conn.close()
 
     @staticmethod
     def add_item(name, category, quantity, unit_price):
@@ -423,13 +460,18 @@ class InventoryController:
 
         conn = get_connection()
         status = get_status(quantity)
-        conn.execute("""
-            INSERT INTO hardware (item_name, category, quantity, unit_price, status)
-            VALUES (?, ?, ?, ?, ?)
-        """, (name, category, quantity, unit_price, status))
-        conn.commit()
-        conn.close()
-        return True, "Equipment added successfully."
+        try:
+            conn.execute("""
+                INSERT INTO hardware (item_name, category, quantity, unit_price, status)
+                VALUES (?, ?, ?, ?, ?)
+            """, (name, category, quantity, unit_price, status))
+            conn.commit()
+            return True, "Equipment added successfully."
+        except Exception as e:
+            conn.rollback()
+            return False, str(e)
+        finally:
+            conn.close()
 
     @staticmethod
     def update_item(item_id, name, category, quantity, unit_price):
@@ -440,199 +482,236 @@ class InventoryController:
 
         conn = get_connection()
         status = get_status(quantity)
-        conn.execute("""
-            UPDATE hardware
-            SET item_name = ?, category = ?, quantity = ?, unit_price = ?, status = ?
-            WHERE item_id = ?
-        """, (name, category, quantity, unit_price, status, item_id))
-        conn.commit()
-        conn.close()
-        return True, "Equipment updated successfully."
+        try:
+            conn.execute("""
+                UPDATE hardware
+                SET item_name = ?, category = ?, quantity = ?, unit_price = ?, status = ?
+                WHERE item_id = ?
+            """, (name, category, quantity, unit_price, status, item_id))
+            conn.commit()
+            return True, "Equipment updated successfully."
+        except Exception as e:
+            conn.rollback()
+            return False, str(e)
+        finally:
+            conn.close()
 
     @staticmethod
     def delete_bulk_items(item_ids):
         if not item_ids:
             return False, "No items selected."
         conn = get_connection()
-        conn.executemany("DELETE FROM hardware WHERE item_id = ?", [(i,) for i in item_ids])
-        conn.commit()
-        conn.close()
-        return True, "Selected equipment deleted successfully."
+        try:
+            conn.executemany("DELETE FROM hardware WHERE item_id = ?", [(i,) for i in item_ids])
+            conn.commit()
+            return True, "Selected equipment deleted successfully."
+        except Exception as e:
+            conn.rollback()
+            return False, str(e)
+        finally:
+            conn.close()
 
     @staticmethod
     def borrow_item(username, item_id, quantity=1, borrow_date=None, return_date=None, remarks=""):
         conn = get_connection()
-        item = conn.execute("SELECT quantity, item_name FROM hardware WHERE item_id = ?", (item_id,)).fetchone()
-        if not item:
-            conn.close()
-            return False, "Item not found."
-        if item["quantity"] < quantity:
-            conn.close()
-            return False, f"Not enough stock. Only {item['quantity']} available."
+        try:
+            item = conn.execute("SELECT quantity, item_name FROM hardware WHERE item_id = ?", (item_id,)).fetchone()
+            if not item:
+                return False, "Item not found."
+            if item["quantity"] < quantity:
+                return False, f"Not enough stock. Only {item['quantity']} available."
 
-        conn.execute("""
-            INSERT INTO loans (username, item_id, quantity, status, borrowed_at, expected_return, remarks)
-            VALUES (?, ?, ?, 'PENDING_BORROW', ?, ?, ?)
-        """, (username, item_id, quantity, borrow_date, return_date, remarks))
-        conn.commit()
-        conn.close()
-        return True, "Borrow request submitted for administrator approval."
+            conn.execute("""
+                INSERT INTO loans (username, item_id, quantity, status, borrowed_at, expected_return, remarks)
+                VALUES (?, ?, ?, 'PENDING_BORROW', ?, ?, ?)
+            """, (username, item_id, quantity, borrow_date, return_date, remarks))
+            conn.commit()
+            return True, "Borrow request submitted for administrator approval."
+        except Exception as e:
+            conn.rollback()
+            return False, str(e)
+        finally:
+            conn.close()
 
     @staticmethod
     def request_bulk_item_returns(loan_ids):
         if not loan_ids:
             return False, "No items selected to return."
         conn = get_connection()
-        conn.executemany("""
-            UPDATE loans 
-            SET status = 'PENDING_RETURN'
-            WHERE loan_id = ? AND status = 'BORROWED'
-        """, [(i,) for i in loan_ids])
-        conn.commit()
-        conn.close()
-        return True, "Return request submitted for administrator approval."
+        try:
+            conn.executemany("""
+                UPDATE loans 
+                SET status = 'PENDING_RETURN'
+                WHERE loan_id = ? AND status = 'BORROWED'
+            """, [(i,) for i in loan_ids])
+            conn.commit()
+            return True, "Return request submitted for administrator approval."
+        except Exception as e:
+            conn.rollback()
+            return False, str(e)
+        finally:
+            conn.close()
 
     @staticmethod
     def get_user_active_loans(username):
         conn = get_connection()
-        rows = conn.execute("""
-            SELECT l.loan_id, h.item_name, l.quantity, l.borrowed_at, l.expected_return, l.remarks
-            FROM loans l JOIN hardware h ON l.item_id = h.item_id
-            WHERE l.username = ? AND l.status = 'BORROWED'
-            ORDER BY l.loan_id DESC
-        """, (username,)).fetchall()
-        conn.close()
-        return rows
+        try:
+            rows = conn.execute("""
+                SELECT l.loan_id, h.item_name, l.quantity, l.borrowed_at, l.expected_return, l.remarks
+                FROM loans l JOIN hardware h ON l.item_id = h.item_id
+                WHERE l.username = ? AND l.status = 'BORROWED'
+                ORDER BY l.loan_id DESC
+            """, (username,)).fetchall()
+            return rows
+        finally:
+            conn.close()
 
     @staticmethod
     def get_user_pending_borrows(username):
         conn = get_connection()
-        rows = conn.execute("""
-            SELECT l.loan_id, h.item_name, l.quantity, l.status, l.borrowed_at, l.expected_return, l.remarks
-            FROM loans l JOIN hardware h ON l.item_id = h.item_id
-            WHERE l.username = ? AND l.status = 'PENDING_BORROW'
-            ORDER BY l.loan_id DESC
-        """, (username,)).fetchall()
-        conn.close()
-        return rows
+        try:
+            rows = conn.execute("""
+                SELECT l.loan_id, h.item_name, l.quantity, l.status, l.borrowed_at, l.expected_return, l.remarks
+                FROM loans l JOIN hardware h ON l.item_id = h.item_id
+                WHERE l.username = ? AND l.status = 'PENDING_BORROW'
+                ORDER BY l.loan_id DESC
+            """, (username,)).fetchall()
+            return rows
+        finally:
+            conn.close()
 
     @staticmethod
     def get_user_loan_history(username):
         conn = get_connection()
-        rows = conn.execute("""
-            SELECT l.loan_id, h.item_name, l.quantity, l.status, l.borrowed_at, l.returned_at
-            FROM loans l JOIN hardware h ON l.item_id = h.item_id
-            WHERE l.username = ?
-            ORDER BY l.loan_id DESC
-        """, (username,)).fetchall()
-        conn.close()
-        return rows
+        try:
+            rows = conn.execute("""
+                SELECT l.loan_id, h.item_name, l.quantity, l.status, l.borrowed_at, l.returned_at
+                FROM loans l JOIN hardware h ON l.item_id = h.item_id
+                WHERE l.username = ?
+                ORDER BY l.loan_id DESC
+            """, (username,)).fetchall()
+            return rows
+        finally:
+            conn.close()
 
     @staticmethod
     def get_pending_borrows():
         conn = get_connection()
-        rows = conn.execute("""
-            SELECT l.loan_id, l.username, h.item_name, l.quantity, l.borrowed_at, l.expected_return, l.remarks
-            FROM loans l JOIN hardware h ON l.item_id = h.item_id
-            WHERE l.status = 'PENDING_BORROW'
-            ORDER BY l.loan_id DESC
-        """, (username if 'username' in locals() else '',)).fetchall() if False else conn.execute("""
-            SELECT l.loan_id, l.username, h.item_name, l.quantity, l.borrowed_at, l.expected_return, l.remarks
-            FROM loans l JOIN hardware h ON l.item_id = h.item_id
-            WHERE l.status = 'PENDING_BORROW'
-            ORDER BY l.loan_id DESC
-        """).fetchall()
-        conn.close()
-        return rows
+        try:
+            rows = conn.execute("""
+                SELECT l.loan_id, l.username, h.item_name, l.quantity, l.borrowed_at, l.expected_return, l.remarks
+                FROM loans l JOIN hardware h ON l.item_id = h.item_id
+                WHERE l.status = 'PENDING_BORROW'
+                ORDER BY l.loan_id DESC
+            """).fetchall()
+            return rows
+        finally:
+            conn.close()
 
     @staticmethod
     def get_pending_returns():
         conn = get_connection()
-        rows = conn.execute("""
-            SELECT l.loan_id, l.username, h.item_name, l.quantity
-            FROM loans l JOIN hardware h ON l.item_id = h.item_id
-            WHERE l.status = 'PENDING_RETURN'
-            ORDER BY l.loan_id DESC
-        """).fetchall()
-        conn.close()
-        return rows
+        try:
+            rows = conn.execute("""
+                SELECT l.loan_id, l.username, h.item_name, l.quantity
+                FROM loans l JOIN hardware h ON l.item_id = h.item_id
+                WHERE l.status = 'PENDING_RETURN'
+                ORDER BY l.loan_id DESC
+            """).fetchall()
+            return rows
+        finally:
+            conn.close()
 
     @staticmethod
     def get_all_loans_history():
         conn = get_connection()
-        rows = conn.execute("""
-            SELECT l.loan_id, l.username, h.item_name, l.quantity, l.status, l.borrowed_at, l.returned_at
-            FROM loans l JOIN hardware h ON l.item_id = h.item_id
-            ORDER BY l.loan_id DESC
-        """).fetchall()
-        conn.close()
-        return rows
+        try:
+            rows = conn.execute("""
+                SELECT l.loan_id, l.username, h.item_name, l.quantity, l.status, l.borrowed_at, l.returned_at
+                FROM loans l JOIN hardware h ON l.item_id = h.item_id
+                ORDER BY l.loan_id DESC
+            """).fetchall()
+            return rows
+        finally:
+            conn.close()
 
     @staticmethod
     def process_bulk_borrows(loan_ids, approve=True):
         if not loan_ids:
             return False, "No requests selected."
         conn = get_connection()
-        for lid in loan_ids:
-            loan = conn.execute("SELECT * FROM loans WHERE loan_id = ?", (lid,)).fetchone()
-            if loan and loan["status"] == "PENDING_BORROW":
-                if approve:
-                    item = conn.execute("SELECT quantity FROM hardware WHERE item_id = ?", (loan["item_id"],)).fetchone()
-                    if item and item["quantity"] >= loan["quantity"]:
-                        new_qty = item["quantity"] - loan["quantity"]
-                        conn.execute("""
-                            UPDATE hardware 
-                            SET quantity = ?, status = ? 
-                            WHERE item_id = ?
-                        """, (new_qty, get_status(new_qty), loan["item_id"]))
-                        conn.execute("""
-                            UPDATE loans 
-                            SET status = 'BORROWED' 
-                            WHERE loan_id = ?
-                        """, (lid,))
-                else:
-                    conn.execute("UPDATE loans SET status = 'REJECTED' WHERE loan_id = ?", (lid,))
-        conn.commit()
-        conn.close()
-        return True, f"Borrow request(s) {'approved' if approve else 'rejected'}."
+        try:
+            for lid in loan_ids:
+                loan = conn.execute("SELECT * FROM loans WHERE loan_id = ?", (lid,)).fetchone()
+                if loan and loan["status"] == "PENDING_BORROW":
+                    if approve:
+                        item = conn.execute("SELECT quantity FROM hardware WHERE item_id = ?", (loan["item_id"],)).fetchone()
+                        if item and item["quantity"] >= loan["quantity"]:
+                            new_qty = item["quantity"] - loan["quantity"]
+                            conn.execute("""
+                                UPDATE hardware 
+                                SET quantity = ?, status = ? 
+                                WHERE item_id = ?
+                            """, (new_qty, get_status(new_qty), loan["item_id"]))
+                            conn.execute("""
+                                UPDATE loans 
+                                SET status = 'BORROWED' 
+                                WHERE loan_id = ?
+                            """, (lid,))
+                    else:
+                        conn.execute("UPDATE loans SET status = 'REJECTED' WHERE loan_id = ?", (lid,))
+            conn.commit()
+            return True, f"Borrow request(s) {'approved' if approve else 'rejected'}."
+        except Exception as e:
+            conn.rollback()
+            return False, str(e)
+        finally:
+            conn.close()
 
     @staticmethod
     def process_bulk_returns(loan_ids, approve=True):
         if not loan_ids:
             return False, "No return requests selected."
         conn = get_connection()
-        for lid in loan_ids:
-            loan = conn.execute("SELECT * FROM loans WHERE loan_id = ?", (lid,)).fetchone()
-            if loan and loan["status"] == "PENDING_RETURN":
-                if approve:
-                    item = conn.execute("SELECT quantity FROM hardware WHERE item_id = ?", (loan["item_id"],)).fetchone()
-                    if item:
-                        new_qty = item["quantity"] + loan["quantity"]
-                        conn.execute("""
-                            UPDATE hardware 
-                            SET quantity = ?, status = ? 
-                            WHERE item_id = ?
-                        """, (new_qty, get_status(new_qty), loan["item_id"]))
-                        conn.execute("""
-                            UPDATE loans 
-                            SET status = 'RETURNED', returned_at = CURRENT_TIMESTAMP 
-                            WHERE loan_id = ?
-                        """, (lid,))
-                else:
-                    conn.execute("UPDATE loans SET status = 'BORROWED' WHERE loan_id = ?", (lid,))
-        conn.commit()
-        conn.close()
-        return True, f"Return request(s) {'approved' if approve else 'rejected'}."
+        try:
+            for lid in loan_ids:
+                loan = conn.execute("SELECT * FROM loans WHERE loan_id = ?", (lid,)).fetchone()
+                if loan and loan["status"] == "PENDING_RETURN":
+                    if approve:
+                        item = conn.execute("SELECT quantity FROM hardware WHERE item_id = ?", (loan["item_id"],)).fetchone()
+                        if item:
+                            new_qty = item["quantity"] + loan["quantity"]
+                            conn.execute("""
+                                UPDATE hardware 
+                                SET quantity = ?, status = ? 
+                                WHERE item_id = ?
+                            """, (new_qty, get_status(new_qty), loan["item_id"]))
+                            conn.execute("""
+                                UPDATE loans 
+                                SET status = 'RETURNED', returned_at = CURRENT_TIMESTAMP 
+                                WHERE loan_id = ?
+                            """, (lid,))
+                    else:
+                        conn.execute("UPDATE loans SET status = 'BORROWED' WHERE loan_id = ?", (lid,))
+            conn.commit()
+            return True, f"Return request(s) {'approved' if approve else 'rejected'}."
+        except Exception as e:
+            conn.rollback()
+            return False, str(e)
+        finally:
+            conn.close()
 
     @staticmethod
     def export_to_csv(username):
         try:
             conn = get_connection()
-            rows = conn.execute("""
-                SELECT item_id, item_name, category, quantity, unit_price, status
-                FROM hardware ORDER BY item_id
-            """).fetchall()
-            conn.close()
+            try:
+                rows = conn.execute("""
+                    SELECT item_id, item_name, category, quantity, unit_price, status
+                    FROM hardware ORDER BY item_id
+                """).fetchall()
+            finally:
+                conn.close()
 
             csv_path = os.path.abspath("inventory_report.csv")
             with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
