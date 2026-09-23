@@ -15,6 +15,8 @@ from flask import (
 )
 from functools import wraps
 import os
+import traceback
+import logging
 
 from Laboratorysystem import (
     init_db,
@@ -33,6 +35,7 @@ with app.app_context():
     try:
         init_db()
     except Exception as e:
+        logging.error(f"Startup DB init error: {e}")
         print(f"Startup DB init error: {e}")
 
 
@@ -66,25 +69,33 @@ def index():
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        username = request.form.get("username", "").strip()
-        password = request.form.get("password", "").strip()
+        try:
+            username = request.form.get("username", "").strip()
+            password = request.form.get("password", "").strip()
 
-        if not username or not password:
-            flash("Username and password are required.", "danger")
+            if not username or not password:
+                flash("Username and password are required.", "danger")
+                return render_template("login.html")
+
+            ok, msg, role, is_locked, email = AuthController.login_user(username, password)
+
+            if ok:
+                session.clear()
+                session["username"] = username
+                session["role"] = role
+                session["email"] = email
+                flash(msg, "success")
+                return redirect(url_for("dashboard"))
+
+            flash(msg, "danger")
+            return render_template("login.html", locked=is_locked, locked_username=username)
+
+        except Exception as e:
+            err_trace = traceback.format_exc()
+            print("LOGIN CRITICAL EXCEPTION:\n", err_trace)
+            logging.error(f"LOGIN CRITICAL EXCEPTION: {err_trace}")
+            flash(f"System Error: {str(e)}", "danger")
             return render_template("login.html")
-
-        ok, msg, role, is_locked, email = AuthController.login_user(username, password)
-
-        if ok:
-            session.clear()
-            session["username"] = username
-            session["role"] = role
-            session["email"] = email
-            flash(msg, "success")
-            return redirect(url_for("dashboard"))
-
-        flash(msg, "danger")
-        return render_template("login.html", locked=is_locked, locked_username=username)
 
     return render_template("login.html")
 
