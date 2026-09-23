@@ -1,0 +1,48 @@
+/* Custom styling para sa Campus Hardware Inventory Web Portal */
+
+body {
+    background-color: #f8f9fa;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    color: #212529;
+}
+
+/* Navbar */
+.navbar-brand {
+    letter-spacing: 0.5px;
+}
+
+/* Card Improvements */
+.card {
+    border-radius: 8px;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.card-header {
+    border-top-left-radius: 7px !important;
+    border-top-right-radius: 7px !important;
+}
+
+/* Table Styling */
+.table thead th {
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    background-color: #f1f3f5;
+    border-bottom: 2px solid #dee2e6;
+}
+
+.table tbody td {
+    font-size: 0.95rem;
+}
+
+/* Status Badges */
+.badge {
+    font-weight: 500;
+    padding: 0.45em 0.75em;
+}
+
+/* Form Inputs */
+.form-control:focus, .form-select:focus {
+    box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.15);
+    border-color: #86b7fe;
+}
