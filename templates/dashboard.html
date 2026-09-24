@@ -233,6 +233,7 @@
                                             <th>Select</th>
                                             <th>Item</th>
                                             <th>Qty</th>
+                                            <th>Status</th>
                                             <th>Due Date</th>
                                         </tr>
                                     </thead>
@@ -242,11 +243,12 @@
                                             <td><input type="checkbox" name="loan_ids" value="{{ loan['loan_id'] }}" class="form-check-input"></td>
                                             <td>{{ loan['item_name'] }}</td>
                                             <td>{{ loan['quantity'] }}</td>
+                                            <td><span class="badge bg-success text-white">BORROWED</span></td>
                                             <td><small class="text-muted">{{ loan['expected_return'] }}</small></td>
                                         </tr>
                                         {% else %}
                                         <tr>
-                                            <td colspan="4" class="text-center py-3 text-muted">No items currently borrowed.</td>
+                                            <td colspan="5" class="text-center py-3 text-muted">No items currently borrowed.</td>
                                         </tr>
                                         {% endfor %}
                                     </tbody>
@@ -286,7 +288,7 @@
                                     <tr>
                                         <td>{{ req['item_name'] }}</td>
                                         <td>{{ req['quantity'] }}</td>
-                                        <td><span class="badge bg-warning-subtle text-warning">Pending Approval</span></td>
+                                        <td><span class="badge bg-warning text-dark">PENDING</span></td>
                                         <td><small class="text-muted">{{ req['borrowed_at'] }}</small></td>
                                     </tr>
                                     {% else %}
@@ -302,7 +304,7 @@
             </div>
         </div>
 
-        <!-- USER LOAN HISTORY -->
+        <!-- USER LOAN HISTORY (COLOR-CODED STATUS) -->
         <div class="card border-0 shadow-sm mb-4">
             <div class="card-header bg-white py-3 border-0">
                 <h6 class="mb-0 fw-bold"><i class="bi bi-clock-history me-2 text-primary"></i>My Loan Records</h6>
@@ -326,7 +328,19 @@
                                 <td>#{{ h['loan_id'] }}</td>
                                 <td>{{ h['item_name'] }}</td>
                                 <td>{{ h['quantity'] }}</td>
-                                <td><span class="badge bg-secondary">{{ h['status'] }}</span></td>
+                                <td>
+                                    {% if 'PENDING' in h['status'] %}
+                                        <span class="badge bg-warning text-dark">{{ h['status'] }}</span>
+                                    {% elif h['status'] == 'BORROWED' %}
+                                        <span class="badge bg-success text-white">BORROWED</span>
+                                    {% elif h['status'] == 'REJECTED' %}
+                                        <span class="badge bg-danger text-white">REJECTED</span>
+                                    {% elif h['status'] == 'RETURNED' %}
+                                        <span class="badge bg-info-subtle text-info border border-info-subtle">RETURNED</span>
+                                    {% else %}
+                                        <span class="badge bg-secondary">{{ h['status'] }}</span>
+                                    {% endif %}
+                                </td>
                                 <td><small class="text-muted">{{ h['borrowed_at'] }}</small></td>
                                 <td><small class="text-muted">{{ h['returned_at'] or '-' }}</small></td>
                             </tr>
@@ -367,9 +381,11 @@
                                     {% elif 'LOGOUT' in act['action'] %}
                                         <span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle"><i class="bi bi-box-arrow-right me-1"></i>Sign Out</span>
                                     {% elif 'BORROW' in act['action'] %}
-                                        <span class="badge bg-warning-subtle text-warning border border-warning-subtle"><i class="bi bi-bag-plus me-1"></i>Borrow</span>
+                                        <span class="badge bg-warning text-dark"><i class="bi bi-bag-plus me-1"></i>Borrow</span>
                                     {% elif 'RETURN' in act['action'] %}
                                         <span class="badge bg-info-subtle text-info border border-info-subtle"><i class="bi bi-arrow-return-left me-1"></i>Return</span>
+                                    {% elif 'REJECT' in act['action'] or 'LOCK' in act['action'] %}
+                                        <span class="badge bg-danger text-white"><i class="bi bi-x-circle me-1"></i>Rejected / Locked</span>
                                     {% elif 'PASSWORD' in act['action'] %}
                                         <span class="badge bg-danger-subtle text-danger border border-danger-subtle"><i class="bi bi-shield-lock me-1"></i>Security</span>
                                     {% else %}
@@ -409,6 +425,7 @@
                                             <th>User</th>
                                             <th>Item</th>
                                             <th>Qty</th>
+                                            <th>Status</th>
                                             <th>Dates</th>
                                         </tr>
                                     </thead>
@@ -419,11 +436,12 @@
                                             <td><strong>{{ pb['username'] }}</strong></td>
                                             <td>{{ pb['item_name'] }}</td>
                                             <td>{{ pb['quantity'] }}</td>
+                                            <td><span class="badge bg-warning text-dark">PENDING</span></td>
                                             <td><small class="text-muted">{{ pb['borrowed_at'] }} to {{ pb['expected_return'] }}</small></td>
                                         </tr>
                                         {% else %}
                                         <tr>
-                                            <td colspan="5" class="text-center py-3 text-muted">No pending borrow requests.</td>
+                                            <td colspan="6" class="text-center py-3 text-muted">No pending borrow requests.</td>
                                         </tr>
                                         {% endfor %}
                                     </tbody>
@@ -445,7 +463,7 @@
                 <div class="card border-0 shadow-sm h-100">
                     <div class="card-header bg-white py-3 border-0 d-flex justify-content-between align-items-center">
                         <h6 class="mb-0 fw-bold"><i class="bi bi-arrow-return-left me-2 text-info"></i>Pending Return Confirmations</h6>
-                        <span class="badge bg-info text-dark">{{ pending_returns|length }}</span>
+                        <span class="badge bg-warning text-dark">{{ pending_returns|length }}</span>
                     </div>
                     <div class="card-body p-0">
                         <form method="POST" action="{{ url_for('admin_return_action') }}">
@@ -457,6 +475,7 @@
                                             <th>User</th>
                                             <th>Item</th>
                                             <th>Qty</th>
+                                            <th>Status</th>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -466,10 +485,11 @@
                                             <td><strong>{{ pr['username'] }}</strong></td>
                                             <td>{{ pr['item_name'] }}</td>
                                             <td>{{ pr['quantity'] }}</td>
+                                            <td><span class="badge bg-warning text-dark">PENDING RETURN</span></td>
                                         </tr>
                                         {% else %}
                                         <tr>
-                                            <td colspan="4" class="text-center py-3 text-muted">No pending return requests.</td>
+                                            <td colspan="5" class="text-center py-3 text-muted">No pending return requests.</td>
                                         </tr>
                                         {% endfor %}
                                     </tbody>
@@ -502,6 +522,7 @@
                                     <th>Select</th>
                                     <th>Username</th>
                                     <th>Email</th>
+                                    <th>Status</th>
                                     <th>Requested At</th>
                                 </tr>
                             </thead>
@@ -511,11 +532,12 @@
                                     <td><input type="checkbox" name="request_ids" value="{{ r['request_id'] }}" class="form-check-input"></td>
                                     <td><strong>{{ r['username'] }}</strong></td>
                                     <td>{{ r['email'] }}</td>
+                                    <td><span class="badge bg-warning text-dark">PENDING</span></td>
                                     <td><small class="text-muted">{{ r['requested_at'] }}</small></td>
                                 </tr>
                                 {% else %}
                                 <tr>
-                                    <td colspan="4" class="text-center py-3 text-muted">No pending password reset requests.</td>
+                                    <td colspan="5" class="text-center py-3 text-muted">No pending password reset requests.</td>
                                 </tr>
                                 {% endfor %}
                             </tbody>
@@ -531,7 +553,7 @@
             </div>
         </div>
 
-        <!-- MASTER LOAN AUDIT LOGS -->
+        <!-- MASTER LOAN AUDIT LOGS (COLOR-CODED STATUS FOR ADMIN) -->
         <div class="card border-0 shadow-sm mb-4">
             <div class="card-header bg-white py-3 border-0">
                 <h6 class="mb-0 fw-bold"><i class="bi bi-journal-bookmark me-2 text-primary"></i>All Campus Loans Master History</h6>
@@ -557,7 +579,19 @@
                                 <td><strong>{{ l['username'] }}</strong></td>
                                 <td>{{ l['item_name'] }}</td>
                                 <td>{{ l['quantity'] }}</td>
-                                <td><span class="badge bg-secondary">{{ l['status'] }}</span></td>
+                                <td>
+                                    {% if 'PENDING' in l['status'] %}
+                                        <span class="badge bg-warning text-dark">{{ l['status'] }}</span>
+                                    {% elif l['status'] == 'BORROWED' %}
+                                        <span class="badge bg-success text-white">BORROWED</span>
+                                    {% elif l['status'] == 'REJECTED' %}
+                                        <span class="badge bg-danger text-white">REJECTED</span>
+                                    {% elif l['status'] == 'RETURNED' %}
+                                        <span class="badge bg-info-subtle text-info border border-info-subtle">RETURNED</span>
+                                    {% else %}
+                                        <span class="badge bg-secondary">{{ l['status'] }}</span>
+                                    {% endif %}
+                                </td>
                                 <td><small class="text-muted">{{ l['borrowed_at'] }}</small></td>
                                 <td><small class="text-muted">{{ l['returned_at'] or '-' }}</small></td>
                             </tr>
@@ -732,7 +766,6 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        // Select all items checkbox for admin
         const selectAll = document.getElementById('selectAllItems');
         if (selectAll) {
             selectAll.addEventListener('change', function() {
@@ -740,7 +773,6 @@
             });
         }
 
-        // Borrow modal details populator
         document.querySelectorAll('.borrow-btn').forEach(button => {
             button.addEventListener('click', function() {
                 document.getElementById('borrowItemId').value = this.getAttribute('data-id');
