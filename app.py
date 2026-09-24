@@ -21,16 +21,16 @@ import logging
 from Laboratorysystem import (
     init_db,
     AuthController,
-    InventoryController
+    InventoryController,
+    ActivityLogger
 )
 
 app = Flask(__name__)
 app.secret_key = os.environ.get(
     "SECRET_KEY",
-    "lab1-development-secret-change-me"
+    "campus-hardware-super-secret-key-2026"
 )
 
-# Tiyaking ma-initialize ang database tables sa startup ng Gunicorn o Flask
 with app.app_context():
     try:
         init_db()
@@ -92,8 +92,8 @@ def login():
 
         except Exception as e:
             err_trace = traceback.format_exc()
-            print("LOGIN CRITICAL EXCEPTION:\n", err_trace)
             logging.error(f"LOGIN CRITICAL EXCEPTION: {err_trace}")
+            print("LOGIN CRITICAL EXCEPTION:\n", err_trace)
             flash(f"System Error: {str(e)}", "danger")
             return render_template("login.html")
 
@@ -166,11 +166,13 @@ def dashboard():
     pending_borrow_requests = []
     all_loans = []
     pending_resets = []
+    user_activity_history = []
 
     if session["role"] == "USER":
         active_loans = InventoryController.get_user_active_loans(session["username"])
         pending_borrow_requests = InventoryController.get_user_pending_borrows(session["username"])
         history = InventoryController.get_user_loan_history(session["username"])
+        user_activity_history = ActivityLogger.get_user_logs(session["username"])
     else:
         pending_returns = InventoryController.get_pending_returns()
         pending_borrows = InventoryController.get_pending_borrows()
@@ -186,6 +188,7 @@ def dashboard():
         total_stocks=total_stocks,
         active_loans=active_loans,
         history=history,
+        user_activity_history=user_activity_history,
         pending_returns=pending_returns,
         pending_borrows=pending_borrows,
         pending_borrow_requests=pending_borrow_requests,
@@ -246,6 +249,8 @@ def return_request():
         return redirect(url_for("dashboard"))
 
     ok, msg = InventoryController.request_bulk_item_returns(loan_ids)
+    if ok:
+        ActivityLogger.log_action(session["username"], "REQUEST_RETURN", f"Submitted return request for Loan IDs: {loan_ids}.")
     flash(msg, "success" if ok else "warning")
     return redirect(url_for("dashboard"))
 
@@ -382,6 +387,9 @@ def export():
 
 @app.route("/logout")
 def logout():
+    username = session.get("username")
+    if username:
+        ActivityLogger.log_action(username, "USER_LOGOUT", "Logged out from system portal.")
     session.clear()
     flash("You have been logged out.", "success")
     return redirect(url_for("login"))

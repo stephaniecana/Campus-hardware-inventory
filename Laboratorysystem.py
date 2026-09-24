@@ -100,11 +100,41 @@ def get_connection():
         return DBWrapper(conn, is_pg=False)
 
 
-def init_db():
-    if os.getenv("DATABASE_URL"):
-        print("DATABASE_URL detected. Skipping local SQLite init (Supabase handled via migration script).")
-        return
+# ==========================================================
+# ACTIVITY LOGGER
+# ==========================================================
 
+class ActivityLogger:
+    @staticmethod
+    def log_action(username, action, details=""):
+        try:
+            conn = get_connection()
+            conn.execute("""
+                INSERT INTO user_activity_logs (username, action, details)
+                VALUES (?, ?, ?)
+            """, (username, action, details))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logging.error("Failed to record activity log: %s", e)
+
+    @staticmethod
+    def get_user_logs(username):
+        conn = get_connection()
+        try:
+            rows = conn.execute("""
+                SELECT log_id, action, details, created_at
+                FROM user_activity_logs
+                WHERE username = ?
+                ORDER BY log_id DESC
+                LIMIT 50
+            """, (username,)).fetchall()
+            return rows
+        finally:
+            conn.close()
+
+
+def init_db():
     conn = get_connection()
 
     # 1. Users table
@@ -158,6 +188,17 @@ def init_db():
             expected_return TIMESTAMP,
             returned_at TIMESTAMP,
             remarks TEXT
+        )
+    """)
+
+    # 5. User Activity Logs table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_activity_logs (
+            log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            action TEXT NOT NULL,
+            details TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
@@ -255,6 +296,7 @@ class AuthController:
                 conn.execute("UPDATE users SET login_attempts = 0 WHERE id = ?", (user["id"],))
                 conn.commit()
                 logging.info("Successful login: %s | Role: %s", username, user["role"])
+                ActivityLogger.log_action(username, "USER_LOGIN", "Logged into system portal.")
                 return True, "Login successful.", user["role"], False, user.get("email", "")
 
             attempts = (user["login_attempts"] or 0) + 1
@@ -262,6 +304,7 @@ class AuthController:
                 conn.execute("UPDATE users SET login_attempts = ?, is_locked = 1 WHERE id = ?", (attempts, user["id"]))
                 conn.commit()
                 logging.warning("Account locked after 3 failed attempts: %s", username)
+                ActivityLogger.log_action(username, "ACCOUNT_LOCKED", "Account locked due to 3 consecutive failed login attempts.")
                 return False, "Account locked after 3 failed attempts.", user["role"], True, user.get("email", "")
 
             conn.execute("UPDATE users SET login_attempts = ? WHERE id = ?", (attempts, user["id"]))
@@ -297,8 +340,9 @@ class AuthController:
             """, (username, email, pw_hash, role))
             conn.commit()
             logging.info("New account registered: %s | Role: %s", username, role)
+            ActivityLogger.log_action(username, "ACCOUNT_REGISTERED", f"Account registered as {role}.")
             return True, "Registration successful! You may now log in."
-        except Exception as e:
+        except Exception:
             conn.rollback()
             return False, "Username or email is already registered."
         finally:
@@ -335,6 +379,7 @@ class AuthController:
             """, (username, email, pw_hash))
             conn.commit()
             logging.info("Password reset request submitted: %s", username)
+            ActivityLogger.log_action(username, "RESET_REQUESTED", "Submitted password reset request for admin approval.")
             return True, "Reset request submitted. An admin will review it."
         except Exception as e:
             conn.rollback()
@@ -375,6 +420,9 @@ class AuthController:
                             SET password_hash = ?, is_locked = 0, login_attempts = 0
                             WHERE username = ?
                         """, (req["password_hash"], req["username"]))
+                        ActivityLogger.log_action(req["username"], "RESET_APPROVED", "Admin approved account password reset.")
+                    else:
+                        ActivityLogger.log_action(req["username"], "RESET_REJECTED", "Admin rejected password reset request.")
                     conn.execute("""
                         UPDATE password_resets
                         SET status = ?, reviewed_at = CURRENT_TIMESTAMP
@@ -407,6 +455,7 @@ class AuthController:
             conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_hash, user["id"]))
             conn.commit()
             logging.info("Password changed by %s", username)
+            ActivityLogger.log_action(username, "CHANGE_PASSWORD", "User successfully changed account password.")
             return True, "Password updated successfully."
         except Exception as e:
             conn.rollback()
@@ -522,10 +571,11 @@ class InventoryController:
                 return False, f"Not enough stock. Only {item['quantity']} available."
 
             conn.execute("""
-                INSERT INTO loans (username, item_id, quantity, status, borrowed_at, expected_return, remarks)
-                VALUES (?, ?, ?, 'PENDING_BORROW', ?, ?, ?)
-            """, (username, item_id, quantity, borrow_date, return_date, remarks))
+                INSERT INTO loans (username, item_id, item_name, quantity, status, borrowed_at, expected_return, remarks)
+                VALUES (?, ?, ?, ?, 'PENDING_BORROW', ?, ?, ?)
+            """, (username, item_id, item["item_name"], quantity, borrow_date, return_date, remarks))
             conn.commit()
+            ActivityLogger.log_action(username, "REQUEST_BORROW", f"Requested borrow for {quantity}x '{item['item_name']}'.")
             return True, "Borrow request submitted for administrator approval."
         except Exception as e:
             conn.rollback()
@@ -645,7 +695,7 @@ class InventoryController:
                 loan = conn.execute("SELECT * FROM loans WHERE loan_id = ?", (lid,)).fetchone()
                 if loan and loan["status"] == "PENDING_BORROW":
                     if approve:
-                        item = conn.execute("SELECT quantity FROM hardware WHERE item_id = ?", (loan["item_id"],)).fetchone()
+                        item = conn.execute("SELECT quantity, item_name FROM hardware WHERE item_id = ?", (loan["item_id"],)).fetchone()
                         if item and item["quantity"] >= loan["quantity"]:
                             new_qty = item["quantity"] - loan["quantity"]
                             conn.execute("""
@@ -655,11 +705,13 @@ class InventoryController:
                             """, (new_qty, get_status(new_qty), loan["item_id"]))
                             conn.execute("""
                                 UPDATE loans 
-                                SET status = 'BORROWED' 
+                                SET status = 'BORROWED', borrowed_at = CURRENT_TIMESTAMP
                                 WHERE loan_id = ?
                             """, (lid,))
+                            ActivityLogger.log_action(loan["username"], "BORROW_APPROVED", f"Admin approved borrow of {loan['quantity']}x '{item['item_name']}'.")
                     else:
                         conn.execute("UPDATE loans SET status = 'REJECTED' WHERE loan_id = ?", (lid,))
+                        ActivityLogger.log_action(loan["username"], "BORROW_REJECTED", f"Admin rejected borrow request for Loan #{lid}.")
             conn.commit()
             return True, f"Borrow request(s) {'approved' if approve else 'rejected'}."
         except Exception as e:
@@ -678,7 +730,7 @@ class InventoryController:
                 loan = conn.execute("SELECT * FROM loans WHERE loan_id = ?", (lid,)).fetchone()
                 if loan and loan["status"] == "PENDING_RETURN":
                     if approve:
-                        item = conn.execute("SELECT quantity FROM hardware WHERE item_id = ?", (loan["item_id"],)).fetchone()
+                        item = conn.execute("SELECT quantity, item_name FROM hardware WHERE item_id = ?", (loan["item_id"],)).fetchone()
                         if item:
                             new_qty = item["quantity"] + loan["quantity"]
                             conn.execute("""
@@ -691,8 +743,10 @@ class InventoryController:
                                 SET status = 'RETURNED', returned_at = CURRENT_TIMESTAMP 
                                 WHERE loan_id = ?
                             """, (lid,))
+                            ActivityLogger.log_action(loan["username"], "RETURN_APPROVED", f"Admin confirmed return of {loan['quantity']}x '{item['item_name']}'.")
                     else:
                         conn.execute("UPDATE loans SET status = 'BORROWED' WHERE loan_id = ?", (lid,))
+                        ActivityLogger.log_action(loan["username"], "RETURN_REJECTED", f"Admin declined return request for Loan #{lid}.")
             conn.commit()
             return True, f"Return request(s) {'approved' if approve else 'rejected'}."
         except Exception as e:
@@ -721,6 +775,7 @@ class InventoryController:
                     writer.writerow([r["item_id"], r["item_name"], r["category"], r["quantity"], r["unit_price"], r["status"]])
 
             logging.info("Inventory report generated by %s", username)
+            ActivityLogger.log_action(username, "EXPORT_CSV", "Exported hardware inventory report to CSV.")
             return True, "Export successful."
         except Exception as e:
             return False, str(e)

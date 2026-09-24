@@ -1,441 +1,49 @@
-{% extends "base.html" %}
-{% block title %}Dashboard - Campus Hardware Inventory{% endblock %}
-
-{% block content %}
-<!-- SUMMARY CARDS -->
-<div class="row g-3 mb-4">
-    <div class="col-md-4">
-        <div class="card shadow-sm border-0 border-start border-primary border-4">
-            <div class="card-body">
-                <div class="text-muted small fw-semibold">TOTAL STOCKS</div>
-                <div class="fs-3 fw-bold text-dark">{{ total_stocks }} units</div>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-4">
-        <div class="card shadow-sm border-0 border-start border-success border-4">
-            <div class="card-body">
-                <div class="text-muted small fw-semibold">ACCOUNT ROLE</div>
-                <div class="fs-3 fw-bold text-dark">{{ session.get('role') }}</div>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-4 d-flex align-items-center justify-content-end">
-        <a href="{{ url_for('export') }}" class="btn btn-outline-secondary w-100 py-3">
-            Export Hardware Catalog (.CSV)
-        </a>
-    </div>
-</div>
-
-<!-- INVENTORY SEARCH & FILTER -->
-<div class="card shadow-sm mb-4">
-    <div class="card-body">
-        <form method="GET" action="{{ url_for('dashboard') }}" class="row g-2 align-items-center">
-            <div class="col-md-5">
-                <input type="text" name="search" class="form-control" placeholder="Search equipment name or category..." value="{{ search }}">
-            </div>
-            <div class="col-md-4">
-                <select name="category" class="form-select">
-                    <option value="ALL">All Categories</option>
-                    {% for cat in categories %}
-                        <option value="{{ cat }}" {% if selected_category == cat %}selected{% endif %}>{{ cat }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-            <div class="col-md-3 d-flex gap-2">
-                <button type="submit" class="btn btn-primary w-100">Filter</button>
-                <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Reset</a>
-            </div>
-        </form>
-    </div>
-</div>
-
-<!-- HARDWARE CATALOG -->
-<div class="card shadow-sm mb-4">
-    <div class="card-header bg-dark text-white fw-semibold">Hardware Catalog</div>
-    <div class="table-responsive">
-        <table class="table table-hover align-middle mb-0">
-            <thead class="table-light">
-                <tr>
-                    <th>ID</th>
-                    <th>Equipment Name</th>
-                    <th>Category</th>
-                    <th>Available Stock</th>
-                    <th>Unit Price (₱)</th>
-                    <th>Status</th>
-                    <th style="min-width: 180px;">Action</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for item in items %}
-                <tr>
-                    <td>{{ item[0] }}</td>
-                    <td class="fw-semibold">{{ item[1] }}</td>
-                    <td>{{ item[2] }}</td>
-                    <td>{{ item[3] }}</td>
-                    <td>₱{{ "%.2f"|format(item[4]) }}</td>
-                    <td>
-                        <span class="badge bg-{{ 'success' if item[5] == 'In Stock' else ('warning text-dark' if item[5] == 'Low Stock' else 'danger') }}">
-                            {{ item[5] }}
-                        </span>
-                    </td>
-                    <td>
-                        {% if session['role'] == 'USER' %}
-                            {% if item[3] > 0 %}
-                            <!-- USER BORROW TRIGGER -->
-                            <button type="button" class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#borrowModal{{ item[0] }}">
-                                Borrow
-                            </button>
-
-                            <!-- BORROW MODAL DIALOG -->
-                            <div class="modal fade" id="borrowModal{{ item[0] }}" tabindex="-1" aria-labelledby="borrowModalLabel{{ item[0] }}" aria-hidden="true">
-                                <div class="modal-dialog">
-                                    <div class="modal-content">
-                                        <div class="modal-header bg-primary text-white">
-                                            <h5 class="modal-title" id="borrowModalLabel{{ item[0] }}">Borrow: {{ item[1] }}</h5>
-                                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
-                                        </div>
-                                        <form action="{{ url_for('borrow') }}" method="POST">
-                                            <div class="modal-body text-start">
-                                                <input type="hidden" name="item_id" value="{{ item[0] }}">
-                                                
-                                                <div class="mb-3">
-                                                    <label class="form-label small fw-bold">Quantity (Max: {{ item[3] }})</label>
-                                                    <input type="number" name="quantity" value="1" min="1" max="{{ item[3] }}" class="form-control" required>
-                                                </div>
-
-                                                <div class="row mb-3">
-                                                    <div class="col-md-6">
-                                                        <label class="form-label small fw-bold">Borrow Date</label>
-                                                        <input type="datetime-local" name="borrow_date" class="form-control" required>
-                                                    </div>
-                                                    <div class="col-md-6">
-                                                        <label class="form-label small fw-bold">Expected Return Date</label>
-                                                        <input type="datetime-local" name="return_date" class="form-control" required>
-                                                    </div>
-                                                </div>
-
-                                                <div class="mb-3">
-                                                    <label class="form-label small fw-bold">Remarks / Purpose</label>
-                                                    <textarea name="remarks" class="form-control" rows="2" placeholder="State reason or laboratory experiment name..."></textarea>
-                                                </div>
-                                            </div>
-                                            <div class="modal-footer">
-                                                <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
-                                                <button type="submit" class="btn btn-primary btn-sm">Submit Request</button>
-                                            </div>
-                                        </form>
-                                    </div>
-                                </div>
-                            </div>
-                            {% else %}
-                                <span class="badge bg-secondary">Out of Stock</span>
-                            {% endif %}
-                        {% else %}
-                            <div class="d-flex gap-1">
-                                <!-- ADMIN EDIT TRIGGER -->
-                                <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#editModal{{ item[0] }}">
-                                    Edit
-                                </button>
-
-                                <!-- ADMIN DELETE ACTION -->
-                                <form action="{{ url_for('admin_delete') }}" method="POST" class="d-inline">
-                                    <input type="hidden" name="item_ids" value="{{ item[0] }}">
-                                    <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Delete this equipment entry?')">
-                                        Delete
-                                    </button>
-                                </form>
-                            </div>
-
-                            <!-- ADMIN EDIT MODAL -->
-                            <div class="modal fade" id="editModal{{ item[0] }}" tabindex="-1" aria-labelledby="editModalLabel{{ item[0] }}" aria-hidden="true">
-                                <div class="modal-dialog">
-                                    <div class="modal-content">
-                                        <div class="modal-header bg-dark text-white">
-                                            <h5 class="modal-title" id="editModalLabel{{ item[0] }}">Update Equipment #{{ item[0] }}</h5>
-                                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
-                                        </div>
-                                        <form action="{{ url_for('admin_update') }}" method="POST">
-                                            <div class="modal-body text-start">
-                                                <input type="hidden" name="item_id" value="{{ item[0] }}">
-                                                <div class="mb-3">
-                                                    <label class="form-label small fw-bold">Equipment Name</label>
-                                                    <input type="text" name="item_name" class="form-control" value="{{ item[1] }}" required>
-                                                </div>
-                                                <div class="mb-3">
-                                                    <label class="form-label small fw-bold">Category</label>
-                                                    <input type="text" name="category" class="form-control" value="{{ item[2] }}" required>
-                                                </div>
-                                                <div class="row">
-                                                    <div class="col-md-6 mb-3">
-                                                        <label class="form-label small fw-bold">Quantity</label>
-                                                        <input type="number" name="quantity" class="form-control" value="{{ item[3] }}" min="0" required>
-                                                    </div>
-                                                    <div class="col-md-6 mb-3">
-                                                        <label class="form-label small fw-bold">Unit Price (₱)</label>
-                                                        <input type="number" step="0.01" name="unit_price" class="form-control" value="{{ item[4] }}" min="0" required>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                            <div class="modal-footer">
-                                                <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
-                                                <button type="submit" class="btn btn-primary btn-sm">Save Changes</button>
-                                            </div>
-                                        </form>
-                                    </div>
-                                </div>
-                            </div>
-                        {% endif %}
-                    </td>
-                </tr>
-                {% else %}
-                <tr>
-                    <td colspan="7" class="text-center text-muted py-4">No records found.</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-</div>
-
 {% if session['role'] == 'USER' %}
-<!-- USER PANELS -->
-<div class="row g-4 mb-4">
-    <!-- MY BORROWED ITEMS -->
-    <div class="col-md-6">
-        <div class="card shadow-sm h-100">
-            <div class="card-header bg-primary text-white fw-semibold">My Borrowed Items</div>
-            <div class="card-body">
-                {% if active_loans %}
-                <form action="{{ url_for('return_request') }}" method="POST">
-                    <ul class="list-group mb-3">
-                        {% for loan in active_loans %}
-                        <li class="list-group-item d-flex justify-content-between align-items-center">
-                            <div>
-                                <input class="form-check-input me-2" type="checkbox" name="loan_ids" value="{{ loan['loan_id'] }}">
-                                <strong>{{ loan['item_name'] }}</strong> (Qty: {{ loan['quantity'] }})
-                                {% if loan['remarks'] %}
-                                    <div class="small text-muted fst-italic">Purpose: {{ loan['remarks'] }}</div>
-                                {% endif %}
-                            </div>
-                            <div class="text-end">
-                                <div class="small text-muted">From: {{ loan['borrowed_at'] }}</div>
-                                <div class="small text-danger">Due: {{ loan['expected_return'] }}</div>
-                            </div>
-                        </li>
-                        {% endfor %}
-                    </ul>
-                    <button type="submit" class="btn btn-warning btn-sm w-100">Request Return for Selected</button>
-                </form>
-                {% else %}
-                <p class="text-muted small mb-0">No active borrowed items.</p>
-                {% endif %}
-            </div>
-        </div>
-    </div>
-
-    <!-- USER PENDING BORROW REQUESTS -->
-    <div class="col-md-6">
-        <div class="card shadow-sm h-100">
-            <div class="card-header bg-secondary text-white fw-semibold">Pending Borrow Requests</div>
-            <div class="card-body">
-                {% if pending_borrow_requests %}
-                <ul class="list-group">
-                    {% for p in pending_borrow_requests %}
-                    <li class="list-group-item d-flex justify-content-between align-items-center">
-                        <div>
-                            <span><strong>{{ p['item_name'] }}</strong> (Qty: {{ p['quantity'] }})</span>
-                            {% if p['remarks'] %}
-                                <div class="small text-muted fst-italic">Purpose: {{ p['remarks'] }}</div>
-                            {% endif %}
-                            <div class="small text-muted">Scheduled: {{ p['borrowed_at'] }} to {{ p['expected_return'] }}</div>
-                        </div>
-                        <span class="badge bg-warning text-dark">Awaiting Approval</span>
-                    </li>
-                    {% endfor %}
-                </ul>
-                {% else %}
-                <p class="text-muted small mb-0">No pending borrow requests.</p>
-                {% endif %}
-            </div>
-        </div>
-    </div>
-</div>
-
-{% else %}
-
-<!-- ADMIN APPROVAL PANELS -->
-<div class="row g-4 mb-4">
-    <!-- PENDING BORROW REQUESTS APPROVAL PANEL -->
-    <div class="col-md-6">
-        <div class="card shadow-sm h-100">
-            <div class="card-header bg-primary text-white fw-semibold">
-                Pending Borrow Requests ({{ pending_borrows|length }})
-            </div>
-            <div class="card-body">
-                {% for b in pending_borrows %}
-                <form action="{{ url_for('admin_borrow_action') }}" method="POST" class="d-flex justify-content-between align-items-center mb-2 p-2 bg-light border rounded">
-                    <input type="hidden" name="loan_ids" value="{{ b['loan_id'] }}">
-                    <div>
-                        <div><strong>{{ b['username'] }}</strong> requests <span>{{ b['item_name'] }} (Qty: {{ b['quantity'] }})</span></div>
-                        {% if b['remarks'] %}
-                            <div class="small text-muted fst-italic">Purpose: {{ b['remarks'] }}</div>
-                        {% endif %}
-                        <div class="small text-muted">{{ b['borrowed_at'] }} to {{ b['expected_return'] }}</div>
-                    </div>
-                    <div class="btn-group">
-                        <button name="action" value="approve" class="btn btn-sm btn-success">Approve</button>
-                        <button name="action" value="reject" class="btn btn-sm btn-danger">Reject</button>
-                    </div>
-                </form>
-                {% else %}
-                <p class="text-muted small mb-0">No borrow requests waiting for approval.</p>
-                {% endfor %}
-            </div>
-        </div>
-    </div>
-
-    <!-- PENDING RETURNS APPROVAL PANEL -->
-    <div class="col-md-6">
-        <div class="card shadow-sm h-100">
-            <div class="card-header bg-warning text-dark fw-semibold">
-                Pending Returns ({{ pending_returns|length }})
-            </div>
-            <div class="card-body">
-                {% for r in pending_returns %}
-                <form action="{{ url_for('admin_return_action') }}" method="POST" class="d-flex justify-content-between align-items-center mb-2 p-2 bg-light border rounded">
-                    <input type="hidden" name="loan_ids" value="{{ r['loan_id'] }}">
-                    <div>
-                        <strong>{{ r['username'] }}</strong> returned 
-                        <span>{{ r['item_name'] }} (Qty: {{ r['quantity'] }})</span>
-                    </div>
-                    <div>
-                        <button name="action" value="approve" class="btn btn-sm btn-success">Confirm & Restock</button>
-                    </div>
-                </form>
-                {% else %}
-                <p class="text-muted small mb-0">No pending return requests.</p>
-                {% endfor %}
-            </div>
-        </div>
-    </div>
-</div>
-
-<div class="row g-4 mb-4">
-    <!-- ADD HARDWARE -->
-    <div class="col-md-6">
-        <div class="card shadow-sm h-100">
-            <div class="card-header bg-dark text-white fw-semibold">Add New Equipment</div>
-            <div class="card-body">
-                <form action="{{ url_for('admin_add') }}" method="POST">
-                    <div class="mb-2">
-                        <label class="form-label small">Equipment Name</label>
-                        <input type="text" name="item_name" class="form-control form-control-sm" required>
-                    </div>
-                    <div class="mb-2">
-                        <label class="form-label small">Category</label>
-                        <input type="text" name="category" class="form-control form-control-sm" required>
-                    </div>
-                    <div class="row mb-3">
-                        <div class="col">
-                            <label class="form-label small">Quantity</label>
-                            <input type="number" name="quantity" class="form-control form-control-sm" min="1" required>
-                        </div>
-                        <div class="col">
-                            <label class="form-label small">Unit Price (₱)</label>
-                            <input type="number" step="0.01" name="unit_price" class="form-control form-control-sm" required>
-                        </div>
-                    </div>
-                    <button type="submit" class="btn btn-sm btn-success w-100">Save Equipment</button>
-                </form>
-            </div>
-        </div>
-    </div>
-
-    <!-- PASSWORD RESET REQUESTS -->
-    <div class="col-md-6">
-        <div class="card shadow-sm h-100">
-            <div class="card-header bg-danger text-white fw-semibold">
-                Password Reset Requests ({{ pending_resets|length }})
-            </div>
-            <div class="card-body">
-                {% for req in pending_resets %}
-                <form action="{{ url_for('admin_reset_action') }}" method="POST" class="d-flex justify-content-between align-items-center mb-2 p-2 bg-light border rounded">
-                    <input type="hidden" name="request_ids" value="{{ req['request_id'] }}">
-                    <div>
-                        <strong>{{ req['username'] }}</strong>
-                        <div class="small text-muted">{{ req['email'] }}</div>
-                    </div>
-                    <div class="btn-group">
-                        <button name="action" value="approve" class="btn btn-sm btn-success">Approve</button>
-                        <button name="action" value="reject" class="btn btn-sm btn-danger">Reject</button>
-                    </div>
-                </form>
-                {% else %}
-                <p class="text-muted small mb-0">No pending password reset requests.</p>
-                {% endfor %}
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- BORROW AUDIT / LOAN HISTORY (ADMIN ONLY) -->
-<div class="card shadow-sm mb-4">
-    <div class="card-header bg-secondary text-white fw-semibold">Borrow Audit & History</div>
+<!-- USER ACTIONS AUDIT TRAIL -->
+<div class="card mt-4 shadow-sm border-0">
+  <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+    <h5 class="mb-0">🕒 My Recent Activity History</h5>
+    <span class="badge bg-secondary">{{ user_activity_history|length }} entries</span>
+  </div>
+  <div class="card-body p-0">
     <div class="table-responsive">
-        <table class="table table-sm table-hover align-middle mb-0">
-            <thead class="table-light">
-                <tr>
-                    <th>Loan ID</th>
-                    <th>User</th>
-                    <th>Equipment</th>
-                    <th>Quantity</th>
-                    <th>Status</th>
-                    <th>Borrowed At</th>
-                    <th>Returned At</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for loan in all_loans %}
-                <tr>
-                    <td>{{ loan['loan_id'] }}</td>
-                    <td>{{ loan['username'] }}</td>
-                    <td>{{ loan['item_name'] }}</td>
-                    <td>{{ loan['quantity'] }}</td>
-                    <td>
-                        <span class="badge bg-{{ 'success' if loan['status'] == 'RETURNED' else ('primary' if loan['status'] == 'BORROWED' else 'warning text-dark') }}">
-                            {{ loan['status'] }}
-                        </span>
-                    </td>
-                    <td>{{ loan['borrowed_at'] or '-' }}</td>
-                    <td>{{ loan['returned_at'] or '-' }}</td>
-                </tr>
-                {% else %}
-                <tr>
-                    <td colspan="7" class="text-center text-muted py-3">No borrow transactions recorded yet.</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+      <table class="table table-hover table-striped mb-0">
+        <thead class="table-light">
+          <tr>
+            <th style="width: 25%;">Date & Time</th>
+            <th style="width: 25%;">Action</th>
+            <th style="width: 50%;">Details</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for log in user_activity_history %}
+          <tr>
+            <td><small class="text-muted">{{ log['created_at'] }}</small></td>
+            <td>
+              {% if 'LOGIN' in log['action'] %}
+                <span class="badge bg-primary">Sign In</span>
+              {% elif 'LOGOUT' in log['action'] %}
+                <span class="badge bg-secondary">Sign Out</span>
+              {% elif 'BORROW' in log['action'] %}
+                <span class="badge bg-warning text-dark">Borrow Request</span>
+              {% elif 'RETURN' in log['action'] %}
+                <span class="badge bg-info text-dark">Return</span>
+              {% elif 'PASSWORD' in log['action'] %}
+                <span class="badge bg-danger">Security</span>
+              {% else %}
+                <span class="badge bg-light text-dark border">{{ log['action'] }}</span>
+              {% endif %}
+            </td>
+            <td>{{ log['details'] }}</td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="3" class="text-center text-muted py-3">No activity logs recorded yet.</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
     </div>
+  </div>
 </div>
 {% endif %}
-
-<!-- CHANGE PASSWORD SECTION -->
-<div class="card shadow-sm">
-    <div class="card-header bg-light fw-semibold">Change Password</div>
-    <div class="card-body">
-        <form action="{{ url_for('change_password') }}" method="POST" class="row g-3">
-            <div class="col-md-5">
-                <input type="password" name="old_password" class="form-control form-control-sm" placeholder="Current Password" required>
-            </div>
-            <div class="col-md-5">
-                <input type="password" name="new_password" class="form-control form-control-sm" placeholder="New Password" required>
-            </div>
-            <div class="col-md-2">
-                <button type="submit" class="btn btn-sm btn-outline-primary w-100">Update Password</button>
-            </div>
-        </form>
-    </div>
-</div>
-{% endblock %}
