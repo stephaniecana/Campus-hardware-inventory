@@ -34,6 +34,8 @@ app.secret_key = os.environ.get(
     "campus-hardware-super-secret-key-2026"
 )
 
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
 # --- BREVO SMTP CONFIGURATION ---
 SMTP_SERVER = "smtp-relay.brevo.com"
 SMTP_PORT = 2525
