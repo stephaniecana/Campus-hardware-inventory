@@ -1,6 +1,6 @@
 # ==========================================================
 # CAMPUS HARDWARE INVENTORY SYSTEM
-# Flask Web Application
+# Flask Web Application with Brevo SMTP Two-Step Verification
 # ==========================================================
 
 from flask import (
@@ -17,6 +17,9 @@ from functools import wraps
 import os
 import traceback
 import logging
+import smtplib
+import random
+from email.mime.text import MIMEText
 
 from Laboratorysystem import (
     init_db,
@@ -30,6 +33,39 @@ app.secret_key = os.environ.get(
     "SECRET_KEY",
     "campus-hardware-super-secret-key-2026"
 )
+
+# --- BREVO SMTP CONFIGURATION ---
+SMTP_SERVER = "smtp-relay.brevo.com"
+SMTP_PORT = 2525
+SMTP_LOGIN = os.environ.get("SMTP_LOGIN", "bbf7bd001@smtp-brevo.com")
+SMTP_PASSWORD = os.environ.get(
+    "SMTP_PASSWORD",
+    "xsmtpsib-75f20055297daa505454582f20da99f0cd5680933844a5157fab65a6926d6c5c-vjgzZyCw2ae1CFcT"
+)
+# Note: Ensure SENDER_EMAIL is set to your verified sender email address in Brevo
+SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "your-email@example.com")
+
+
+def send_otp_email(receiver_email, otp, intent):
+    """Sends a 6-digit OTP using Brevo SMTP."""
+    msg = MIMEText(
+        f"Your {intent} One-Time Password (OTP) is: {otp}\n\n"
+        f"Please enter this code to proceed. Do not share this code with anyone."
+    )
+    msg['Subject'] = f"Laboratory System - {intent} OTP"
+    msg['From'] = SENDER_EMAIL
+    msg['To'] = receiver_email
+
+    try:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_LOGIN, SMTP_PASSWORD)
+            server.send_message(msg)
+        return True
+    except Exception as e:
+        print(f"Email Error: {e}")
+        return False
+
 
 with app.app_context():
     try:
@@ -110,16 +146,26 @@ def register():
     password = request.form.get("password", "").strip()
     role = request.form.get("role", "USER").strip().upper()
 
-    if role not in ("USER", "ADMIN"):
-        role = "USER"
-
     if not username or not email or not password:
         flash("All registration fields are required.", "danger")
-        return redirect(url_for("login"))
+        return redirect(url_for("register"))
 
-    ok, msg = AuthController.register_user(username, email, password, role=role)
-    flash(msg, "success" if ok else "warning")
-    return redirect(url_for("login"))
+    # Generate OTP and save payload to session
+    otp = str(random.randint(100000, 999999))
+    session['pending_user'] = {
+        'username': username,
+        'email': email,
+        'password': password,
+        'role': role,
+        'otp': otp
+    }
+
+    if send_otp_email(email, otp, intent="Account Registration"):
+        flash("We sent a 6-digit code to your email. Please verify.", "info")
+        return redirect(url_for("verify_otp", action="register"))
+    else:
+        flash("Failed to send OTP email. Please try again.", "danger")
+        return redirect(url_for("register"))
 
 
 @app.route("/reset-request", methods=["GET", "POST"])
@@ -134,15 +180,69 @@ def reset_request():
 
     if not username or not email or not new_password or not confirm_password:
         flash("All reset fields are required.", "danger")
-        return redirect(url_for("login"))
+        return redirect(url_for("reset_request"))
 
     if new_password != confirm_password:
         flash("New passwords do not match.", "danger")
+        return redirect(url_for("reset_request"))
+
+    # Generate OTP and save payload to session
+    otp = str(random.randint(100000, 999999))
+    session['pending_reset'] = {
+        'username': username,
+        'email': email,
+        'new_password': new_password,
+        'otp': otp
+    }
+
+    if send_otp_email(email, otp, intent="Password Reset"):
+        flash("We sent a 6-digit code to your email. Please verify.", "info")
+        return redirect(url_for("verify_otp", action="reset"))
+    else:
+        flash("Failed to send OTP email. Please try again.", "danger")
+        return redirect(url_for("reset_request"))
+
+
+@app.route("/verify-otp/<action>", methods=["GET", "POST"])
+def verify_otp(action):
+    # Determine which session payload key to use
+    session_key = 'pending_user' if action == "register" else 'pending_reset'
+
+    if session_key not in session:
+        flash("Session expired. Please try again.", "warning")
         return redirect(url_for("login"))
 
-    ok, msg = AuthController.submit_password_reset_request(username, email, new_password)
-    flash(msg, "success" if ok else "danger")
-    return redirect(url_for("login"))
+    if request.method == "POST":
+        user_otp = request.form.get("otp_code", "").strip()
+        data = session[session_key]
+
+        if user_otp == data['otp']:
+            if action == "register":
+                # OTP matches, execute user creation
+                ok, msg = AuthController.register_user(
+                    data['username'],
+                    data['email'],
+                    data['password'],
+                    role=data['role']
+                )
+                session.pop(session_key, None)
+                flash("Account successfully verified and created!", "success" if ok else "warning")
+                return redirect(url_for("login"))
+
+            elif action == "reset":
+                # OTP matches, submit reset request to Admin
+                ok, msg = AuthController.submit_password_reset_request(
+                    data['username'],
+                    data['email'],
+                    data['new_password']
+                )
+                session.pop(session_key, None)
+                flash("Email verified! Your password reset request has been submitted.", "success" if ok else "danger")
+                return redirect(url_for("login"))
+        else:
+            flash("Invalid OTP code. Try again.", "danger")
+
+    return render_template("otp_verify.html", action_url=url_for('verify_otp', action=action))
 
 
 @app.route("/dashboard")
@@ -157,7 +257,9 @@ def dashboard():
     categories = InventoryController.get_categories()
 
     all_items_for_total = InventoryController.get_all_items(search_text="", category="ALL")
-    total_stocks = sum(item[3] for item in all_items_for_total)
+    
+    # Safe index access for stock sums
+    total_stocks = sum(item[3] if isinstance(item, (tuple, list)) else item['quantity'] for item in all_items_for_total)
 
     active_loans = []
     history = []
