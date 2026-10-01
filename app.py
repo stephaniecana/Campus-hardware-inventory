@@ -40,7 +40,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 SMTP_SERVER = "smtp-relay.brevo.com"
 SMTP_PORT = 2525
 SMTP_LOGIN = os.environ.get("SMTP_LOGIN", "bbf7bd001@smtp-brevo.com")
-SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "xsmtpsib-75f20055297daa505454582f20da99f0cd5680933844a5157fab65a6926d6c5c-vjgzZyCw2ae1CFcT")
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "tephaniecana11@gmail.com")
 
 def send_otp_email(receiver_email, otp, intent):
