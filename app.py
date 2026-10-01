@@ -39,10 +39,10 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 # --- BREVO SMTP CONFIGURATION ---
 SMTP_SERVER = "smtp-relay.brevo.com"
 SMTP_PORT = 2525
-# TODO: Replace these with your actual Brevo SMTP Login and Master Password
-SMTP_LOGIN = "bbf7bd001@smtp-brevo.com"       
-SMTP_PASSWORD = "xsmtpsib-75f20055297daa505454582f20da99f0cd5680933844a5157fab65a6926d6c5c-vjgzZyCw2ae1CFcT"  
- 
+SMTP_LOGIN = os.environ.get("SMTP_LOGIN", "bbf7bd001@smtp-brevo.com")
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
+SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "tephaniecana11@gmail.com")
+
 def send_otp_email(receiver_email, otp, intent):
     """Sends a 6-digit OTP using Brevo SMTP."""
     msg = MIMEText(f"Your {intent} One-Time Password (OTP) is: {otp}\n\nPlease enter this code to proceed. Do not share this code with anyone.")
