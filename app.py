@@ -37,25 +37,17 @@ app.secret_key = os.environ.get(
 # --- BREVO SMTP CONFIGURATION ---
 SMTP_SERVER = "smtp-relay.brevo.com"
 SMTP_PORT = 2525
-SMTP_LOGIN = os.environ.get("SMTP_LOGIN", "bbf7bd001@smtp-brevo.com")
-SMTP_PASSWORD = os.environ.get(
-    "SMTP_PASSWORD",
-    "xsmtpsib-75f20055297daa505454582f20da99f0cd5680933844a5157fab65a6926d6c5c-vjgzZyCw2ae1CFcT"
-)
-# Note: Ensure SENDER_EMAIL is set to your verified sender email address in Brevo
-SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "your-email@example.com")
-
-
+# TODO: Replace these with your actual Brevo SMTP Login and Master Password
+SMTP_LOGIN = "bbf7bd001@smtp-brevo.com"       
+SMTP_PASSWORD = "xsmtpsib-75f20055297daa505454582f20da99f0cd5680933844a5157fab65a6926d6c5c-vjgzZyCw2ae1CFcT"  
+ 
 def send_otp_email(receiver_email, otp, intent):
     """Sends a 6-digit OTP using Brevo SMTP."""
-    msg = MIMEText(
-        f"Your {intent} One-Time Password (OTP) is: {otp}\n\n"
-        f"Please enter this code to proceed. Do not share this code with anyone."
-    )
+    msg = MIMEText(f"Your {intent} One-Time Password (OTP) is: {otp}\n\nPlease enter this code to proceed. Do not share this code with anyone.")
     msg['Subject'] = f"Laboratory System - {intent} OTP"
-    msg['From'] = SENDER_EMAIL
+    msg['From'] = "tephaniecana11@gmail.com"  # Replace with your verified Brevo email
     msg['To'] = receiver_email
-
+    
     try:
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
             server.starttls()
@@ -150,7 +142,7 @@ def register():
         flash("All registration fields are required.", "danger")
         return redirect(url_for("register"))
 
-    # Generate OTP and save payload to session
+    # Generate OTP and save to session
     otp = str(random.randint(100000, 999999))
     session['pending_user'] = {
         'username': username,
@@ -186,7 +178,7 @@ def reset_request():
         flash("New passwords do not match.", "danger")
         return redirect(url_for("reset_request"))
 
-    # Generate OTP and save payload to session
+    # Generate OTP and save to session
     otp = str(random.randint(100000, 999999))
     session['pending_reset'] = {
         'username': username,
@@ -205,7 +197,7 @@ def reset_request():
 
 @app.route("/verify-otp/<action>", methods=["GET", "POST"])
 def verify_otp(action):
-    # Determine which session payload key to use
+    # Determine which session data to use
     session_key = 'pending_user' if action == "register" else 'pending_reset'
 
     if session_key not in session:
@@ -218,7 +210,7 @@ def verify_otp(action):
 
         if user_otp == data['otp']:
             if action == "register":
-                # OTP matches, execute user creation
+                # OTP matches, create the user
                 ok, msg = AuthController.register_user(
                     data['username'],
                     data['email'],
@@ -230,7 +222,7 @@ def verify_otp(action):
                 return redirect(url_for("login"))
 
             elif action == "reset":
-                # OTP matches, submit reset request to Admin
+                # OTP matches, submit the reset request to Admin
                 ok, msg = AuthController.submit_password_reset_request(
                     data['username'],
                     data['email'],
@@ -257,8 +249,6 @@ def dashboard():
     categories = InventoryController.get_categories()
 
     all_items_for_total = InventoryController.get_all_items(search_text="", category="ALL")
-    
-    # Safe index access for stock sums
     total_stocks = sum(item[3] if isinstance(item, (tuple, list)) else item['quantity'] for item in all_items_for_total)
 
     active_loans = []
